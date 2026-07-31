@@ -79,11 +79,36 @@ jobs:
             if curl -fsS --max-time 10 "$URL/health"; then
               echo ""
               echo "app is up after $((i*5))s"
-              exit 0
+              break
             fi
             sleep 5
           done
-          echo "app never answered"
+          # WARM IT PROPERLY BEFORE THE SCAN.
+          #
+          # The demo runs on the free App Service tier, which puts the worker to
+          # sleep when idle. /health answering once only proves the container
+          # started; the first request to the actual page can still take long
+          # enough that ZAP's spider gives up with "Read timed out" and the whole
+          # job fails with exit code 3 - a red build that says nothing about
+          # security and undermines the entire point of the demo.
+          #
+          # So hit the real page, the one the scanner is about to attack, until
+          # it responds promptly twice in a row.
+          echo "warming the page the scanner will attack"
+          for i in $(seq 1 12); do
+            start=$(date +%s%N)
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$URL/?name=warmup" || echo 000)
+            ms=$(( ($(date +%s%N) - start) / 1000000 ))
+            echo "  attempt $i: HTTP $code in ${ms}ms"
+            if [ "$code" = "200" ] && [ "$ms" -lt 2000 ]; then
+              hits=$((hits+1))
+              [ "${hits:-0}" -ge 2 ] && { echo "warm"; exit 0; }
+            else
+              hits=0
+            fi
+            sleep 3
+          done
+          echo "app never became responsive enough to scan"
           exit 1
 
       # ---- attack it -------------------------------------------------------
@@ -91,10 +116,16 @@ jobs:
         run: |
           chmod 777 "$PWD"
           docker pull ghcr.io/zaproxy/zaproxy:stable
+          # -T 5 gives the spider a five minute budget and -z raises the per
+          # request timeout, because a free-tier App Service can still stall on
+          # an individual request even after the warm-up above. Without these a
+          # slow response fails the JOB rather than reporting a FINDING, which
+          # is a red build that has nothing to do with security.
           docker run --rm -v "$PWD:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/?name=%3Cscript%3Ealert(1)%3C/script%3E" \
-            -J zap-report.json -r zap-report.html -I
+            -J zap-report.json -r zap-report.html -I -T 5 \
+            -z "-config connection.timeoutInSecs=60"
 
       - name: Fail on security gate findings
         run: |
