@@ -26,7 +26,7 @@ const port = process.env.PORT || 3000;
 
 // FLIPPED ON THE VULNERABLE BRANCH. Do not "tidy" this into an env var: the
 // point of the demo is that a reviewer sees a one-line source change in a diff.
-const vulnerable = false;
+const vulnerable = true;
 
 // Express advertises itself in a response header by default. That is a small
 // information disclosure and ZAP reports it, so it goes regardless of branch.
