@@ -23,6 +23,9 @@ on:
 
 permissions:
   contents: read
+  # Required for OIDC. GitHub mints a short-lived token that Entra ID trusts;
+  # nothing long-lived is stored in the repository at all.
+  id-token: write
 
 env:
   AZURE_WEBAPP_NAME: somshiftleft5ae79d
@@ -43,11 +46,30 @@ jobs:
         run: npm test
 
       # ---- deploy to Azure -------------------------------------------------
+      #
+      # PASSWORDLESS, AND THAT IS THE POINT.
+      #
+      # The obvious way to deploy from GitHub is to paste an App Service publish
+      # profile into a secret. It is also a long-lived credential sitting in a
+      # repository, which is exactly the habit a security session should not be
+      # teaching. Basic authentication is disabled on this App Service by
+      # default, so the publish profile does not even work.
+      #
+      # Instead GitHub asks Entra ID for a short-lived token, and Entra trusts
+      # this specific repository and branch through a federated credential. No
+      # password, no key, nothing to rotate, nothing to leak. The identity is
+      # scoped to Website Contributor on ONE resource group.
+      - name: Sign in to Azure with OpenID Connect
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
 
       - name: Wait for the deployed app to answer
         run: |
