@@ -1,0 +1,36 @@
+name: msdo-scan
+
+# Microsoft Security DevOps. This runs Microsoft's security scanners in the
+# pipeline and publishes findings to the repository Security tab.
+#
+# It does NOT require a Microsoft Defender for Cloud DevOps connector, which is
+# useful because connecting GitHub to Defender needs an interactive OAuth
+# consent that cannot be scripted and often needs tenant approval.
+on:
+  push:
+    branches: [main, feature/reflected-input]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  msdo:
+    # The action ships as a .NET tool and needs a Windows runner.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Run Microsoft Security DevOps
+        uses: microsoft/security-devops-action@latest
+        id: msdo
+      - name: Publish findings to the Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.msdo.outputs.sarifFile }}

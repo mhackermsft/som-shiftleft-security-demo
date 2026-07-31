@@ -1,0 +1,1 @@
+{"system":"sample web app","selectedThreats":[{"stride":"Tampering","mitigation":"Encode output and set CSP"},{"stride":"Information disclosure","mitigation":"Set browser defense headers"}]}
