@@ -1,7 +1,7 @@
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
-const vulnerable = false;
+const vulnerable = true;
 app.disable('x-powered-by');
 if (!vulnerable) {
   app.use((req, res, next) => {
@@ -24,3 +24,4 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => res.json({ ok: true, vulnerable }));
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 app.listen(port, () => console.log(`listening on ${port}, vulnerable=${vulnerable}`));
+
