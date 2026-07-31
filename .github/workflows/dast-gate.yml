@@ -1,43 +1,103 @@
 name: dast-gate
+
+# Shift-left security gate.
+#
+# Build, test, DEPLOY TO AZURE APP SERVICE, then point a dynamic scanner at the
+# deployed site and fail the build if the browser defences promised in the
+# threat model are missing.
+#
+# WHY IT DEPLOYS FIRST
+#
+# An earlier version started the app on localhost inside the runner and scanned
+# that. It worked, but it made a weaker claim: "we scanned something that
+# resembles what we ship". Deploying to Azure App Service first means the scan
+# attacks the real, running, HTTPS workload in the same state a citizen would
+# reach it. That is the honest version of dynamic testing, and it is the
+# difference between a CI trick and a security gate.
 on:
   push:
     branches: [main, feature/reflected-input]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AZURE_WEBAPP_NAME: somshiftleft5ae79d
+
 jobs:
   dast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
+
       - run: npm install
+
       - name: Run unit tests
         run: npm test
-      - name: Start app
+
+      # ---- deploy to Azure -------------------------------------------------
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+
+      - name: Wait for the deployed app to answer
         run: |
-          npm start > app.log 2>&1 &
-          for i in {1..30}; do curl -fsS http://127.0.0.1:3000/health && exit 0; sleep 2; done
-          cat app.log
+          URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          echo "waiting for $URL/health"
+          for i in $(seq 1 40); do
+            if curl -fsS --max-time 10 "$URL/health"; then
+              echo ""
+              echo "app is up after $((i*5))s"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "app never answered"
           exit 1
-      - name: Run OWASP ZAP baseline scan
+
+      # ---- attack it -------------------------------------------------------
+      - name: Run OWASP ZAP baseline scan against Azure
         run: |
           chmod 777 "$PWD"
           docker pull ghcr.io/zaproxy/zaproxy:stable
-          docker run --rm --network host -v "$PWD:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t "http://127.0.0.1:3000/?name=%3Cscript%3Ealert(1)%3C/script%3E" -J zap-report.json -r zap-report.html -I
+          docker run --rm -v "$PWD:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/?name=%3Cscript%3Ealert(1)%3C/script%3E" \
+            -J zap-report.json -r zap-report.html -I
+
       - name: Fail on security gate findings
         run: |
           node <<'JS'
           const fs = require('fs');
           const report = JSON.parse(fs.readFileSync('zap-report.json', 'utf8'));
           const alerts = (report.site || []).flatMap(s => s.alerts || []);
-          const gateAlerts = alerts.filter(a => ['Missing Anti-clickjacking Header','X-Content-Type-Options Header Missing','Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s)','Content Security Policy (CSP) Header Not Set','Permissions Policy Header Not Set'].includes(a.alert));
+          // These map directly to the two threats selected in the STRIDE model:
+          // tampering (reflected input) and information disclosure (missing
+          // browser defences). Gating on a curated list rather than on "any
+          // finding" is deliberate - a gate that fires on everything gets
+          // switched off within a week.
+          const gate = [
+            'Missing Anti-clickjacking Header',
+            'X-Content-Type-Options Header Missing',
+            'Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s)',
+            'Content Security Policy (CSP) Header Not Set',
+            'Permissions Policy Header Not Set'
+          ];
+          const gateAlerts = alerts.filter(a => gate.includes(a.alert));
           console.log(`ZAP alerts: ${alerts.length}, gate findings: ${gateAlerts.length}`);
           for (const a of gateAlerts) console.log(`${a.riskdesc}: ${a.alert}`);
           if (gateAlerts.length) process.exit(1);
           JS
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -45,4 +105,3 @@ jobs:
           path: |
             zap-report.json
             zap-report.html
-            app.log
