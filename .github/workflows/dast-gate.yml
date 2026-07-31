@@ -28,13 +28,36 @@ permissions:
   id-token: write
 
 env:
-  AZURE_WEBAPP_NAME: somshiftleft5ae79d
+  # TWO WEB APPS, NOT ONE, AND THIS MATTERS.
+  #
+  # Both branches deploy on every push. When they shared a single App Service
+  # they raced: main deployed the safe build seconds before the vulnerable
+  # branch's scan ran, so the scan attacked the SAFE app, passed, and the demo
+  # silently lost its whole point - a "vulnerable" branch with a green tick.
+  #
+  # So the proposed change gets its own deployment target. That is also how you
+  # would really do this: you do not test a risky change by pushing it over the
+  # thing that is currently serving people.
+  AZURE_WEBAPP_NAME_MAIN: somshiftleft5ae79d
+  AZURE_WEBAPP_NAME_PR: somshiftleft5ae79d-pr
 
 jobs:
   dast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Choose the deployment target for this branch
+        id: target
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            NAME="${{ env.AZURE_WEBAPP_NAME_MAIN }}"
+          else
+            NAME="${{ env.AZURE_WEBAPP_NAME_PR }}"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "url=https://$NAME.azurewebsites.net" >> "$GITHUB_OUTPUT"
+          echo "deploying to $NAME"
 
       - uses: actions/setup-node@v4
         with:
@@ -69,11 +92,11 @@ jobs:
       - name: Deploy to Azure App Service
         uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          app-name: ${{ steps.target.outputs.name }}
 
       - name: Wait for the deployed app to answer
         run: |
-          URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          URL="${{ steps.target.outputs.url }}"
           echo "waiting for $URL/health"
           for i in $(seq 1 40); do
             if curl -fsS --max-time 10 "$URL/health"; then
@@ -123,7 +146,7 @@ jobs:
           # is a red build that has nothing to do with security.
           docker run --rm -v "$PWD:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-            -t "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/?name=%3Cscript%3Ealert(1)%3C/script%3E" \
+            -t "${{ steps.target.outputs.url }}/?name=%3Cscript%3Ealert(1)%3C/script%3E" \
             -J zap-report.json -r zap-report.html -I -T 5 \
             -z "-config connection.timeoutInSecs=60"
 
@@ -158,3 +181,4 @@ jobs:
           path: |
             zap-report.json
             zap-report.html
+
