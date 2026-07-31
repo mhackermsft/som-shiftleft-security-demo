@@ -23,9 +23,6 @@
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
-<<<<<<< HEAD
-const vulnerable = true;
-=======
 
 // FLIPPED ON THE VULNERABLE BRANCH. Do not "tidy" this into an env var: the
 // point of the demo is that a reviewer sees a one-line source change in a diff.
@@ -33,7 +30,6 @@ const vulnerable = true;
 
 // Express advertises itself in a response header by default. That is a small
 // information disclosure and ZAP reports it, so it goes regardless of branch.
->>>>>>> main
 app.disable('x-powered-by');
 
 if (!vulnerable) {
@@ -141,5 +137,3 @@ function escapeHtml(value) {
 }
 
 app.listen(port, () => console.log(`listening on ${port}, vulnerable=${vulnerable}`));
-
-
