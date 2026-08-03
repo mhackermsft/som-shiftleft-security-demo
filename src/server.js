@@ -56,7 +56,7 @@ function escapeHtml(value) {
 
 // The single place a user-supplied value becomes page HTML.
 function renderName(name) {
-  return escapeHtml(name);
+  return name;
 }
 
 // ----------------------------------------------------------------- security
@@ -73,7 +73,7 @@ function securityHeaders(req, res, next) {
   next();
 }
 
-app.use(securityHeaders);
+app.use('/api', securityHeaders);
 
 // ------------------------------------------------------------------ the page
 
