@@ -3,50 +3,79 @@
 // Deliberately tiny. It exists to be threat-modelled, deployed to Azure App
 // Service, and then attacked by a scanner in the pipeline.
 //
-// THE ONE SWITCH THAT MATTERS
+// HOW THE VULNERABLE BRANCH DIFFERS, AND WHY IT LOOKS LIKE THAT
 //
-// `vulnerable` is false on main and true on the feature/reflected-input branch.
-// When it is false the app HTML-encodes user input and sets four browser
-// defence headers. When it is true it does neither, which is precisely the pair
-// of STRIDE threats the threat model selected: tampering (reflected input) and
-// information disclosure (missing browser defences).
+// An earlier version of this demo flipped a constant literally named
+// `vulnerable` from false to true. That was a bad example and it undermined the
+// point being made on stage: any reviewer who saw `const vulnerable = true` in a
+// diff would stop the pull request immediately, and almost no real vulnerability
+// is switched on by a flag.
+//
+// The feature/reflected-input branch now makes two changes that are genuinely
+// the kind of thing that ships:
+//
+//   1. `app.use(securityHeaders)` becomes `app.use('/api', securityHeaders)`.
+//      Scoping middleware to a path looks like tidying. In Express it means the
+//      HTML route silently stops receiving its browser defence headers, because
+//      the middleware no longer matches that path. Nothing errors. Nothing logs.
+//
+//   2. `renderName` stops calling `escapeHtml`. Losing output encoding during a
+//      refactor is the single most common way reflected cross-site scripting is
+//      introduced in real applications.
+//
+// Both are small, both read as housekeeping, and neither announces itself.
+//
+// THE STATUS PANEL IS DERIVED, NOT DECLARED
+//
+// The page reports whether encoding and browser defences are on. Those two
+// values are measured from what the code actually did on the request being
+// served - not read from a flag - so the panel cannot claim one thing while the
+// application does another.
 //
 // WHY THE PAGE IS STYLED
 //
 // The styling is not decoration. This page appears in customer-facing demo
 // recordings and on a projector in a room, so an unstyled serif page on white
-// reads as "something is broken" and distracts from the actual point. The CSS
-// is inline in a <style> element rather than a separate file because the
-// Content-Security-Policy below restricts style-src to 'self', and because one
-// file is easier to reason about when the whole app is the demo.
+// reads as "something is broken" and distracts from the actual point.
 
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// FLIPPED ON THE VULNERABLE BRANCH. Do not "tidy" this into an env var: the
-// point of the demo is that a reviewer sees a one-line source change in a diff.
-const vulnerable = false;
-
 // Express advertises itself in a response header by default. That is a small
-// information disclosure and ZAP reports it, so it goes regardless of branch.
+// information disclosure and ZAP reports it, so it goes on every branch.
 app.disable('x-powered-by');
 
-if (!vulnerable) {
-  app.use((req, res, next) => {
-    // The four headers the threat model promised, plus no-store so a shared
-    // browser on a kiosk does not keep the page.
-    res.setHeader('Content-Security-Policy',
-      "default-src 'self'; frame-ancestors 'none'; script-src 'self'; "
-      + "style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; "
-      + "base-uri 'self'; form-action 'self'");
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-    res.setHeader('Cache-Control', 'no-store');
-    next();
-  });
+// ---------------------------------------------------------------- rendering
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
 }
+
+// The single place a user-supplied value becomes page HTML.
+function renderName(name) {
+  return escapeHtml(name);
+}
+
+// ----------------------------------------------------------------- security
+
+function securityHeaders(req, res, next) {
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; frame-ancestors 'none'; script-src 'self'; "
+    + "style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; "
+    + "base-uri 'self'; form-action 'self'");
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+}
+
+app.use(securityHeaders);
+
+// ------------------------------------------------------------------ the page
 
 const STYLE = `
   :root { color-scheme: dark; }
@@ -117,23 +146,31 @@ function page(nameHtml, state) {
 </body></html>`;
 }
 
-app.get('/', (req, res) => {
-  const name = req.query.name || 'Michigan developer';
-  const state = { encoded: !vulnerable, headers: !vulnerable };
-  if (vulnerable) {
-    // Reflected straight into the page. This is the bug.
-    res.type('html').send(page(name, state));
-    return;
-  }
-  res.type('html').send(page(escapeHtml(name), state));
-});
+// Measured, never declared.
+//
+// `encoded` pushes a known string through the SAME render helper the page uses,
+// so it reports the behaviour of the code path actually serving this request.
+// `headers` asks the response whether the header was really set. If the
+// middleware did not run, it was not.
+const ENCODING_PROBE = '<b>probe</b>';
 
-app.get('/health', (req, res) => res.json({ ok: true, vulnerable }));
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (ch) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[ch]));
+function observedState(res) {
+  return {
+    encoded: renderName(ENCODING_PROBE) !== ENCODING_PROBE,
+    headers: Boolean(res.getHeader('Content-Security-Policy'))
+  };
 }
 
-app.listen(port, () => console.log(`listening on ${port}, vulnerable=${vulnerable}`));
+// ------------------------------------------------------------------- routes
+
+app.get('/', (req, res) => {
+  const name = req.query.name || 'Michigan developer';
+  res.type('html').send(page(renderName(name), observedState(res)));
+});
+
+app.get('/health', (req, res) => {
+  const state = observedState(res);
+  res.json({ ok: true, encoded: state.encoded, headers: state.headers });
+});
+
+app.listen(port, () => console.log(`listening on ${port}`));
